@@ -1,0 +1,28 @@
+# MersenneHunter - Dependencies List
+# For GitHub repository setup
+
+# Core Dependencies
+Flask==2.3.3
+Flask-Dance==7.0.0
+Flask-Login==0.6.3
+numpy==1.24.4
+numba==0.58.1
+psutil==5.9.6
+zstd==1.5.5.1
+
+# Optional GPU Acceleration (NVIDIA)
+cupy-cuda12x==12.3.0
+
+# Optional Quantum Computing
+qiskit==0.45.1
+qiskit-aer==0.13.1
+qiskit-algorithms==0.2.1
+
+# Web Framework Additional
+Werkzeug==2.3.7
+requests==2.31.0
+oauthlib==3.2.2
+PyJWT==2.8.0
+
+# Optional High Performance
+aiohttp==3.9.1
