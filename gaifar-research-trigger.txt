@@ -5,3 +5,4 @@ Sincronização 4: reconhecimento manuscrito HTR da imagem m0285.
 Sincronização 5: nova leitura HTR com PyTorch CPU.
 Sincronização 6: Kraken TraPrInq português.
 Sincronização 7: inspeção dos dados públicos FamilySearch.
+Sincronização 8: Kraken 5.3.0.
