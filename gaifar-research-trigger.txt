@@ -3,3 +3,4 @@ Sincronização 2: coleta rápida dos índices oficiais.
 Sincronização 3: folhas-alvo de batismos e livro completo de casamentos.
 Sincronização 4: reconhecimento manuscrito HTR da imagem m0285.
 Sincronização 5: nova leitura HTR com PyTorch CPU.
+Sincronização 6: Kraken TraPrInq português.
