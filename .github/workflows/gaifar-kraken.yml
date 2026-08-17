@@ -1,0 +1,103 @@
+name: HTR Kraken português Gaifar
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kraken:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar Kraken e dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'kraken==5.3.1' pillow requests
+      - name: Baixar modelo português e reconhecer linhas
+        shell: bash
+        run: |
+          cat > /tmp/run.py <<'PY'
+          import json, os, subprocess, requests, traceback
+          from pathlib import Path
+          from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+
+          root=Path('gaifar-kraken'); root.mkdir(exist_ok=True)
+          src=root/'m0285.jpg'
+          u='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280743'
+          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120); r.raise_for_status(); src.write_bytes(r.content)
+          model=root/'TraPrInq.mlmodel'
+          murl='https://zenodo.org/records/14538271/files/TraPrInq.mlmodel?download=1'
+          rr=requests.get(murl,headers={'User-Agent':'Mozilla/5.0'},timeout=600); rr.raise_for_status(); model.write_bytes(rr.content)
+          print('MODEL_BYTES',model.stat().st_size,flush=True)
+          im=Image.open(src).convert('L')
+
+          # Recorte integral do assento n.º 9.
+          rec=im.crop((100,585,940,1370))
+          rec=ImageOps.autocontrast(rec,cutoff=0.2)
+          rec.save(root/'record_full.png')
+
+          # Centros de linhas determinados visualmente no original.
+          centers=[618,668,718,768,818,868,918,968,1018,1068,1118,1168,1218,1268,1318]
+          line_files=[]
+          for i,c in enumerate(centers,1):
+              # 52 px de altura, com leve margem para ascendentes/descendentes.
+              line=im.crop((112,c-30,940,c+24))
+              line=ImageOps.autocontrast(line,cutoff=0.15)
+              line=ImageEnhance.Contrast(line).enhance(1.15)
+              line=line.filter(ImageFilter.UnsharpMask(radius=0.8,percent=120,threshold=3))
+              # borda branca reduz cortes na extremidade
+              line=ImageOps.expand(line,border=(20,8,20,8),fill=255)
+              p=root/f'line_{i:02d}.png'; line.save(p); line_files.append(p)
+
+          outputs={}
+          # Reconhecimento por linha sem segmentação.
+          for p in line_files:
+              out=p.with_suffix('.txt')
+              cmd=['kraken','-i',str(p),str(out),'ocr','--no-segmentation','-m',str(model)]
+              cp=subprocess.run(cmd,text=True,capture_output=True)
+              text=out.read_text(encoding='utf-8',errors='replace').strip() if out.exists() else ''
+              outputs[p.name]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+              print(p.name+': '+repr(text),flush=True)
+
+          # Segunda passagem com recortes um pouco mais altos.
+          for i,c in enumerate(centers,1):
+              line=im.crop((105,c-37,945,c+31))
+              line=ImageOps.autocontrast(line,cutoff=0.15)
+              line=ImageOps.expand(line,border=(20,8,20,8),fill=255)
+              p=root/f'lineB_{i:02d}.png'; line.save(p)
+              out=p.with_suffix('.txt')
+              cmd=['kraken','-i',str(p),str(out),'ocr','--no-segmentation','-m',str(model)]
+              cp=subprocess.run(cmd,text=True,capture_output=True)
+              text=out.read_text(encoding='utf-8',errors='replace').strip() if out.exists() else ''
+              outputs[p.name]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+              print(p.name+': '+repr(text),flush=True)
+
+          # Passagem de página com segmentação automática.
+          for mode in ['record_full']:
+              inp=root/(mode+'.png'); out=root/(mode+'_ocr.txt')
+              cmd=['kraken','-i',str(inp),str(out),'segment','-bl','ocr','-m',str(model)]
+              cp=subprocess.run(cmd,text=True,capture_output=True)
+              text=out.read_text(encoding='utf-8',errors='replace') if out.exists() else ''
+              outputs[mode]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+              print('FULL_PAGE_TEXT\n'+text,flush=True)
+
+          (root/'results.json').write_text(json.dumps(outputs,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open(root/'results_summary.txt','w',encoding='utf-8') as f:
+              for k,v in outputs.items(): f.write(f'=== {k} ===\n{v["text"]}\n\n')
+          PY
+          python /tmp/run.py
+      - name: Publicar resultados Kraken
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-kraken-portugues
+          path: gaifar-kraken/
+          retention-days: 7
+          if-no-files-found: error
