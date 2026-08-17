@@ -1,0 +1,77 @@
+name: Folhas alvo de Gaifar
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Baixar folhas-alvo oficiais do Digitarq
+        shell: bash
+        run: |
+          cat > /tmp/targets.py <<'PY'
+          import concurrent.futures, json, re, time
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          BASE='https://digitarq.arquivos.pt'
+          DOCS={
+            'batismos_ultimas_40':('6b8b0d0ff79a456d84d69d3c755a5e79','last40'),
+            'casamentos_completo':('0872d2a45bcc447b8ab68b87f8f9f97a','all'),
+          }
+          root=Path('gaifar-targets'); root.mkdir(exist_ok=True)
+
+          def get(url,retries=5):
+            last=None
+            for n in range(retries):
+              try:
+                req=Request(url,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0','Accept':'application/json,image/*,*/*'})
+                with urlopen(req,timeout=120) as r: return r.read(),dict(r.headers)
+              except Exception as e:
+                last=e; time.sleep(1.5*(n+1))
+            raise last
+
+          jobs=[]
+          for label,(docid,mode) in DOCS.items():
+            raw,_=get(f'{BASE}/api/rdigital/{docid}?fromIndex=0&max=100000')
+            data=json.loads(raw); files=[x for x in data.get('results',[]) if x.get('id')]
+            selected=files[-40:] if mode=='last40' else files
+            out=root/label; out.mkdir(exist_ok=True)
+            (out/'index.json').write_text(json.dumps({'total':len(files),'selected':selected},ensure_ascii=False,indent=2),encoding='utf-8')
+            for f in selected:
+              jobs.append((label,out,f))
+
+          def download(job):
+            label,out,f=job
+            raw,h=get(f"{BASE}/api/rdigital/dissemination?fileId={f['id']}")
+            safe=re.sub(r'[\\/:*?"<>|]','_',f.get('name') or f"{f['id']}.jpg")
+            ext='.jpg' if raw[:3]==b'\xff\xd8\xff' else (Path(safe).suffix or '.bin')
+            target=out/(Path(safe).stem+ext)
+            target.write_bytes(raw)
+            return {'book':label,'file_id':f['id'],'source_name':f.get('name'),'saved_as':str(target),'bytes':len(raw),'content_type':h.get('Content-Type') or h.get('content-type')}
+
+          manifest=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            for i,res in enumerate(ex.map(download,jobs),1):
+              manifest.append(res)
+              if i%10==0: print(f'{i}/{len(jobs)} imagens')
+          (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(f'Concluído: {len(manifest)} imagens')
+          PY
+          python /tmp/targets.py
+
+      - name: Publicar folhas-alvo
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-folhas-alvo
+          path: gaifar-targets/
+          compression-level: 6
+          retention-days: 7
+          if-no-files-found: error
