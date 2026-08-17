@@ -1,0 +1,58 @@
+name: Índices rápidos de Gaifar
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obter índices oficiais do Digitarq
+        shell: bash
+        run: |
+          mkdir -p gaifar-index
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          base = 'https://digitarq.arquivos.pt'
+          docs = {
+              'batismos': '6b8b0d0ff79a456d84d69d3c755a5e79',
+              'casamentos': '0872d2a45bcc447b8ab68b87f8f9f97a',
+          }
+          out = Path('gaifar-index')
+          summary = {}
+          for label, docid in docs.items():
+              url = f'{base}/api/rdigital/{docid}?fromIndex=0&max=100000'
+              req = Request(url, headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0','Accept':'application/json'})
+              with urlopen(req, timeout=120) as r:
+                  raw = r.read()
+              data = json.loads(raw)
+              files = [x for x in data.get('results',[]) if x.get('id')]
+              (out/f'{label}.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+              summary[label] = {
+                  'docid': docid,
+                  'total_field': data.get('total'),
+                  'count': len(files),
+                  'first_10': files[:10],
+                  'last_20': files[-20:],
+                  'every_25': [files[i] for i in range(0,len(files),25)],
+              }
+          (out/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(summary,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Publicar índices
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-indices
+          path: gaifar-index/
+          retention-days: 7
+          if-no-files-found: error
