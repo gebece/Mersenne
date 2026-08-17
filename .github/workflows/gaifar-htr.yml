@@ -1,0 +1,90 @@
+name: Leitura HTR Manoel Correia
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  htr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Preparar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install "transformers>=4.48,<5" sentencepiece safetensors pillow requests
+
+      - name: Baixar original, segmentar linhas e reconhecer manuscrito
+        shell: bash
+        run: |
+          cat > /tmp/htr.py <<'PY'
+          import json, os, re, requests, torch
+          from pathlib import Path
+          from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+          from transformers import AutoProcessor, VisionEncoderDecoderModel
+
+          root=Path('gaifar-htr'); root.mkdir(exist_ok=True)
+          url='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280743'
+          r=requests.get(url,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120)
+          r.raise_for_status()
+          (root/'PT-ADVCT-PRQ-PPTL25-001-00009_m0285.jpg').write_bytes(r.content)
+          im=Image.open(root/'PT-ADVCT-PRQ-PPTL25-001-00009_m0285.jpg').convert('RGB')
+
+          # Faixas com sobreposição para não cortar ascendentes/descendentes.
+          bands=[
+            (1,145,570,920,655),(2,145,625,920,715),(3,145,685,920,780),
+            (4,145,745,920,840),(5,145,805,920,900),(6,145,865,920,965),
+            (7,145,925,920,1025),(8,145,985,920,1085),(9,145,1045,920,1145),
+            (10,145,1105,920,1205),(11,145,1165,920,1265),(12,145,1225,920,1325),
+          ]
+          images=[]
+          for n,x1,y1,x2,y2 in bands:
+            crop=im.crop((x1,y1,x2,y2))
+            crop=ImageOps.autocontrast(crop,cutoff=1)
+            crop=ImageEnhance.Contrast(crop).enhance(1.35)
+            crop=ImageEnhance.Sharpness(crop).enhance(1.7)
+            crop=crop.resize((crop.width*2,crop.height*2),Image.Resampling.LANCZOS)
+            p=root/f'linha_{n:02d}.png'; crop.save(p)
+            images.append((n,crop,p))
+
+          models=[
+            'microsoft/trocr-base-handwritten',
+            'Kansallisarkisto/multicentury-htr-model-small',
+            'medieval-data/trocr-medieval-cursiva',
+          ]
+          results={}
+          torch.set_num_threads(2)
+          for model_id in models:
+            print('MODEL',model_id,flush=True)
+            processor=AutoProcessor.from_pretrained(model_id, use_fast=False)
+            model=VisionEncoderDecoderModel.from_pretrained(model_id)
+            model.eval()
+            out=[]
+            for n,img,p in images:
+              pixel_values=processor(images=img,return_tensors='pt').pixel_values
+              with torch.inference_mode():
+                ids=model.generate(pixel_values,max_new_tokens=128,num_beams=4,early_stopping=True)
+              text=processor.batch_decode(ids,skip_special_tokens=True)[0]
+              out.append({'line':n,'text':text})
+              print(f'{n:02d}: {text}',flush=True)
+            results[model_id]=out
+            del model, processor
+          (root/'htr_results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open(root/'htr_results.txt','w',encoding='utf-8') as f:
+            for mid,items in results.items():
+              f.write('\n=== '+mid+' ===\n')
+              for item in items: f.write(f"{item['line']:02d}: {item['text']}\n")
+          PY
+          python /tmp/htr.py
+
+      - name: Publicar HTR e recortes
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-htr-manoel
+          path: gaifar-htr/
+          retention-days: 7
+          if-no-files-found: error
