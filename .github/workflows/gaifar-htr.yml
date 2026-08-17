@@ -11,43 +11,44 @@ permissions:
 jobs:
   htr:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Preparar dependências
         run: |
           python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install "transformers>=4.48,<5" sentencepiece safetensors pillow requests
 
       - name: Baixar original, segmentar linhas e reconhecer manuscrito
         shell: bash
         run: |
           cat > /tmp/htr.py <<'PY'
-          import json, os, re, requests, torch
+          import json, gc, requests, torch, traceback
           from pathlib import Path
-          from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+          from PIL import Image, ImageEnhance, ImageOps
           from transformers import AutoProcessor, VisionEncoderDecoderModel
 
           root=Path('gaifar-htr'); root.mkdir(exist_ok=True)
           url='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280743'
           r=requests.get(url,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120)
           r.raise_for_status()
-          (root/'PT-ADVCT-PRQ-PPTL25-001-00009_m0285.jpg').write_bytes(r.content)
-          im=Image.open(root/'PT-ADVCT-PRQ-PPTL25-001-00009_m0285.jpg').convert('RGB')
+          source=root/'PT-ADVCT-PRQ-PPTL25-001-00009_m0285.jpg'
+          source.write_bytes(r.content)
+          im=Image.open(source).convert('RGB')
 
-          # Faixas com sobreposição para não cortar ascendentes/descendentes.
+          # Uma linha manuscrita por faixa, com pequena sobreposição vertical.
           bands=[
-            (1,145,570,920,655),(2,145,625,920,715),(3,145,685,920,780),
-            (4,145,745,920,840),(5,145,805,920,900),(6,145,865,920,965),
-            (7,145,925,920,1025),(8,145,985,920,1085),(9,145,1045,920,1145),
-            (10,145,1105,920,1205),(11,145,1165,920,1265),(12,145,1225,920,1325),
+            (1,120,590,935,665),(2,120,650,935,725),(3,120,710,935,790),
+            (4,120,770,935,850),(5,120,830,935,910),(6,120,890,935,970),
+            (7,120,950,935,1030),(8,120,1010,935,1090),(9,120,1070,935,1150),
+            (10,120,1130,935,1210),(11,120,1190,935,1270),(12,120,1250,935,1335),
           ]
           images=[]
           for n,x1,y1,x2,y2 in bands:
             crop=im.crop((x1,y1,x2,y2))
-            crop=ImageOps.autocontrast(crop,cutoff=1)
-            crop=ImageEnhance.Contrast(crop).enhance(1.35)
-            crop=ImageEnhance.Sharpness(crop).enhance(1.7)
-            crop=crop.resize((crop.width*2,crop.height*2),Image.Resampling.LANCZOS)
+            crop=ImageOps.autocontrast(crop,cutoff=0.5)
+            crop=ImageEnhance.Contrast(crop).enhance(1.25)
+            crop=ImageEnhance.Sharpness(crop).enhance(1.5)
             p=root/f'linha_{n:02d}.png'; crop.save(p)
             images.append((n,crop,p))
 
@@ -56,32 +57,44 @@ jobs:
             'Kansallisarkisto/multicentury-htr-model-small',
             'medieval-data/trocr-medieval-cursiva',
           ]
-          results={}
+          results={}; errors={}
           torch.set_num_threads(2)
           for model_id in models:
-            print('MODEL',model_id,flush=True)
-            processor=AutoProcessor.from_pretrained(model_id, use_fast=False)
-            model=VisionEncoderDecoderModel.from_pretrained(model_id)
-            model.eval()
-            out=[]
-            for n,img,p in images:
-              pixel_values=processor(images=img,return_tensors='pt').pixel_values
-              with torch.inference_mode():
-                ids=model.generate(pixel_values,max_new_tokens=128,num_beams=4,early_stopping=True)
-              text=processor.batch_decode(ids,skip_special_tokens=True)[0]
-              out.append({'line':n,'text':text})
-              print(f'{n:02d}: {text}',flush=True)
-            results[model_id]=out
-            del model, processor
-          (root/'htr_results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+            try:
+              print('MODEL',model_id,flush=True)
+              processor=AutoProcessor.from_pretrained(model_id, use_fast=False)
+              model=VisionEncoderDecoderModel.from_pretrained(model_id, low_cpu_mem_usage=False)
+              model.eval()
+              out=[]
+              for n,img,p in images:
+                pixel_values=processor(images=img,return_tensors='pt').pixel_values
+                with torch.inference_mode():
+                  ids=model.generate(pixel_values,max_new_tokens=96,num_beams=3,early_stopping=True)
+                text=processor.batch_decode(ids,skip_special_tokens=True)[0]
+                out.append({'line':n,'text':text})
+                print(f'{n:02d}: {text}',flush=True)
+              results[model_id]=out
+              del model, processor
+              gc.collect()
+            except Exception as exc:
+              errors[model_id]=repr(exc)
+              print('ERROR',model_id,repr(exc),flush=True)
+              traceback.print_exc()
+          (root/'htr_results.json').write_text(json.dumps({'results':results,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
           with open(root/'htr_results.txt','w',encoding='utf-8') as f:
             for mid,items in results.items():
               f.write('\n=== '+mid+' ===\n')
               for item in items: f.write(f"{item['line']:02d}: {item['text']}\n")
+            if errors:
+              f.write('\n=== ERROS ===\n')
+              for mid,e in errors.items(): f.write(f'{mid}: {e}\n')
+          if not results:
+            raise RuntimeError('Nenhum modelo HTR concluiu a leitura')
           PY
           python /tmp/htr.py
 
       - name: Publicar HTR e recortes
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gaifar-htr-manoel
