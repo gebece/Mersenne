@@ -1,0 +1,109 @@
+name: Pesquisa temporária Gaifar
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Baixar índices e imagens dos livros de Gaifar
+        shell: bash
+        run: |
+          cat > /tmp/collect.py <<'PY'
+          import json, re, time
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          BASE = "https://digitarq.arquivos.pt"
+          DOCS = {
+              "batismos_1873_1911": "6b8b0d0ff79a456d84d69d3c755a5e79",
+              "casamentos_1895_1911": "0872d2a45bcc447b8ab68b87f8f9f97a",
+          }
+          root = Path("gaifar")
+          root.mkdir(exist_ok=True)
+
+          def get(url, retries=5):
+              last = None
+              for attempt in range(retries):
+                  try:
+                      req = Request(url, headers={
+                          "User-Agent": "Mozilla/5.0 (compatible; historical-genealogy-research/1.0)",
+                          "Accept": "application/json,image/*,*/*",
+                      })
+                      with urlopen(req, timeout=120) as r:
+                          return r.read(), dict(r.headers)
+                  except Exception as e:
+                      last = e
+                      time.sleep(2 * (attempt + 1))
+              raise last
+
+          indexes = {}
+          summary = {}
+          for label, docid in DOCS.items():
+              raw, headers = get(f"{BASE}/api/rdigital/{docid}?fromIndex=0&max=100000")
+              data = json.loads(raw)
+              files = [f for f in data.get("results", []) if f.get("id")]
+              indexes[label] = files
+              (root / f"index_{label}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+              summary[label] = {
+                  "docid": docid,
+                  "total_field": data.get("total"),
+                  "count": len(files),
+                  "first": files[:5],
+                  "last": files[-10:],
+              }
+
+          (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+          selections = {}
+          for label, files in indexes.items():
+              start = max(0, len(files) - (120 if label.startswith("batismos") else 220))
+              selections[label] = list(range(start, len(files)))
+
+          manifest = []
+          for label, positions in selections.items():
+              files = indexes[label]
+              out = root / label
+              out.mkdir(exist_ok=True)
+              for n, pos in enumerate(positions, 1):
+                  f = files[pos]
+                  fid = f["id"]
+                  original_name = f.get("name") or f"{fid}.jpg"
+                  safe = re.sub(r'[\\/:*?"<>|]', '_', original_name)
+                  raw, headers = get(f"{BASE}/api/rdigital/dissemination?fileId={fid}")
+                  ext = ".jpg" if raw[:3] == b"\xff\xd8\xff" else Path(safe).suffix or ".bin"
+                  target = out / f"{pos+1:04d}__{Path(safe).stem}{ext}"
+                  target.write_bytes(raw)
+                  manifest.append({
+                      "book": label,
+                      "position_1_based": pos + 1,
+                      "file_id": fid,
+                      "source_name": original_name,
+                      "saved_as": str(target),
+                      "bytes": len(raw),
+                      "content_type": headers.get("Content-Type") or headers.get("content-type"),
+                  })
+                  if n % 10 == 0:
+                      print(f"{label}: {n}/{len(positions)} imagens")
+                  time.sleep(0.20)
+
+          (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+          python /tmp/collect.py
+
+      - name: Publicar originais do Digitarq
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-digitarq-originais
+          path: gaifar/
+          compression-level: 6
+          retention-days: 7
+          if-no-files-found: error
