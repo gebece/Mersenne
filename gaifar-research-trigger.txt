@@ -1,0 +1,17 @@
+Execução temporária para localizar os assentos de Manoel Correia e do casamento João Correia × Rosa da Costa em Gaifar.
+Sincronização 2: coleta rápida dos índices oficiais.
+Sincronização 3: folhas-alvo de batismos e livro completo de casamentos.
+Sincronização 4: reconhecimento manuscrito HTR da imagem m0285.
+Sincronização 5: nova leitura HTR com PyTorch CPU.
+Sincronização 6: Kraken TraPrInq português.
+Sincronização 7: inspeção dos dados públicos FamilySearch.
+Sincronização 8: Kraken 5.3.0.
+Sincronização 9: captura Playwright do perfil FamilySearch.
+Sincronização 10: captura corrigida das respostas JSON do FamilySearch.
+Sincronização 11: Kraken corrigido para m0286 e modelo via API Zenodo.
+Sincronização 12: sonda de alta resolução do Digitarq.
+Sincronização 13: sonda corrigida e Kraken com download direto do TraPrInq.
+Sincronização 14: leitura cruzada de casamentos e batismos dos irmãos.
+Sincronização 15: folhas de 1881 a 1884 para localizar João Correia e Rosa da Costa.
+Sincronização 16: ampliação para 1879 a 1884, incluindo Rosa de 1882.
+Sincronização 17: HTR em lote dos batismos de 1882 e 1883.
