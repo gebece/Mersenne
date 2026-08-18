@@ -1,0 +1,86 @@
+name: Sonda de alta resolução Gaifar
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Testar endpoints e inspecionar o visualizador
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io, json, re, requests
+          from pathlib import Path
+          from PIL import Image
+          from urllib.parse import urljoin
+
+          base = 'https://digitarq.arquivos.pt'
+          file_id = '52280744'
+          doc_id = '6b8b0d0ff79a456d84d69d3c755a5e79'
+          out = Path('probe'); out.mkdir()
+          s = requests.Session()
+          s.headers.update({'User-Agent':'Mozilla/5.0 genealogy-research/1.0','Accept':'*/*'})
+
+          variants = [
+            f'/api/rdigital/dissemination?fileId={file_id}',
+            f'/api/rdigital/dissemination?fileId={file_id}&original=true',
+            f'/api/rdigital/dissemination?fileId={file_id}&download=true',
+            f'/api/rdigital/dissemination?fileId={file_id}&size=original',
+            f'/api/rdigital/dissemination?fileId={file_id}&maxWidth=5000',
+            f'/api/rdigital/dissemination?fileId={file_id}&width=5000',
+            f'/api/rdigital/dissemination/{file_id}',
+            f'/api/rdigital/download?fileId={file_id}',
+            f'/api/rdigital/file/{file_id}',
+            f'/api/rdigital/{file_id}',
+          ]
+          results=[]
+          for i,v in enumerate(variants):
+            url=base+v
+            try:
+              r=s.get(url,timeout=90,allow_redirects=True)
+              rec={'variant':v,'status':r.status_code,'final_url':r.url,'history':[{'status':h.status_code,'url':h.url,'location':h.headers.get('location')} for h in r.history],
+                   'headers':dict(r.headers),'bytes':len(r.content),'magic':r.content[:20].hex()}
+              try:
+                im=Image.open(io.BytesIO(r.content)); rec['image_format']=im.format; rec['dimensions']=im.size
+                im.save(out/f'variant_{i}_{im.size[0]}x{im.size[1]}.{(im.format or "bin").lower().replace("jpeg","jpg")}')
+              except Exception as e:
+                rec['image_error']=repr(e); (out/f'variant_{i}.bin').write_bytes(r.content[:200000])
+              results.append(rec)
+            except Exception as e: results.append({'variant':v,'error':repr(e)})
+          (out/'variants.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+
+          viewer=f'{base}/fileViewer/{doc_id}?isRepresentation=false&selectedFile={file_id}'
+          r=s.get(viewer,timeout=90)
+          (out/'viewer.html').write_bytes(r.content)
+          scripts=re.findall(r'<script[^>]+src=["\']([^"\']+)',r.text,re.I)
+          bundle_hits=[]
+          for j,src in enumerate(scripts):
+            u=urljoin(viewer,src)
+            try:
+              rr=s.get(u,timeout=90)
+              text=rr.text
+              (out/f'bundle_{j}.js').write_text(text,encoding='utf-8',errors='ignore')
+              for pat in ['dissemination','download','original','rdigital','vault','selectedFile','fileId','image/jpeg','tiff']:
+                for m in re.finditer(pat,text,re.I):
+                  a=max(0,m.start()-500); b=min(len(text),m.end()+800)
+                  bundle_hits.append({'bundle':u,'pattern':pat,'context':text[a:b]})
+                  if len(bundle_hits)>500: break
+                if len(bundle_hits)>500: break
+            except Exception as e: bundle_hits.append({'bundle':u,'error':repr(e)})
+          (out/'bundle_hits.json').write_text(json.dumps(bundle_hits,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(results,ensure_ascii=False,indent=2))
+          PY
+      - name: Publicar sonda
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-hires-probe
+          path: probe/
+          retention-days: 7
+          compression-level: 6
