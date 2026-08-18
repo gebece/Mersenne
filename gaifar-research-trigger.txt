@@ -12,3 +12,4 @@ Sincronização 11: Kraken corrigido para m0286 e modelo via API Zenodo.
 Sincronização 12: sonda de alta resolução do Digitarq.
 Sincronização 13: sonda corrigida e Kraken com download direto do TraPrInq.
 Sincronização 14: leitura cruzada de casamentos e batismos dos irmãos.
+Sincronização 15: folhas de 1881 a 1884 para localizar João Correia e Rosa da Costa.
