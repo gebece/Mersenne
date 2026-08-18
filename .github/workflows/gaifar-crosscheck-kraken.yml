@@ -1,0 +1,101 @@
+name: Leitura cruzada Gaifar casamento e irmãos
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  crosscheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar Kraken CPU
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.4.1+cpu torchvision==0.19.1+cpu --index-url https://download.pytorch.org/whl/cpu
+          pip install 'kraken==5.3.0' pillow requests
+      - name: Baixar fontes e reconhecer margens
+        shell: bash
+        run: |
+          cat > /tmp/cross.py <<'PY'
+          import json, subprocess, requests, re, unicodedata, concurrent.futures
+          from pathlib import Path
+          from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+
+          BASE='https://digitarq.arquivos.pt'
+          ROOT=Path('crosscheck'); ROOT.mkdir(exist_ok=True)
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 genealogy-research/1.0'})
+
+          model=ROOT/'TraPrInq.mlmodel'
+          with s.get('https://zenodo.org/records/14538271/files/TraPrInq.mlmodel?download=1',headers={'Referer':'https://zenodo.org/records/14538271'},stream=True,timeout=1200) as r:
+            r.raise_for_status()
+            with open(model,'wb') as f:
+              for ch in r.iter_content(1024*1024):
+                if ch:f.write(ch)
+
+          docs={
+            'bapt':'6b8b0d0ff79a456d84d69d3c755a5e79',
+            'marr':'0872d2a45bcc447b8ab68b87f8f9f97a',
+          }
+          indexes={}
+          for k,d in docs.items():
+            data=s.get(f'{BASE}/api/rdigital/{d}?fromIndex=0&max=100000',timeout=120).json()
+            indexes[k]=[x for x in data.get('results',[]) if x.get('id')]
+
+          # Matrimonios: páginas m0024-m0040. Baptismos: m0260-m0287 (inclui 1908-1910).
+          chosen=[]
+          for k,lo,hi in [('marr',24,40),('bapt',260,287)]:
+            for rec in indexes[k]:
+              m=re.search(r'_m(\d+)\.',rec.get('name',''))
+              if m and lo<=int(m.group(1))<=hi: chosen.append((k,int(m.group(1)),rec))
+
+          def download(item):
+            k,n,rec=item
+            raw=s.get(f'{BASE}/api/rdigital/dissemination?fileId={rec["id"]}',timeout=180).content
+            p=ROOT/f'{k}_m{n:04d}.jpg'; p.write_bytes(raw); return k,n,p
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            local=list(ex.map(download,chosen))
+
+          results={}
+          for k,n,p in sorted(local):
+            im=Image.open(p).convert('L')
+            specs=[]
+            if k=='marr':
+              specs=[('top',(15,180,min(530,im.width),850)),('bottom',(15,650,min(530,im.width),1470)),('margin',(10,250,min(400,im.width),1450))]
+            else:
+              specs=[('top',(15,30,min(500,im.width),820)),('bottom',(15,650,min(500,im.width),1480)),('margin',(10,20,min(410,im.width),1480))]
+            for label,box in specs:
+              c=im.crop(box); c=ImageOps.autocontrast(c,cutoff=.15); c=ImageEnhance.Contrast(c).enhance(1.12); c=c.filter(ImageFilter.UnsharpMask(radius=.8,percent=100,threshold=2)); c=ImageOps.expand(c,border=18,fill=255)
+              inp=ROOT/f'{k}_m{n:04d}_{label}.png'; out=ROOT/f'{k}_m{n:04d}_{label}.txt'; c.save(inp)
+              cp=subprocess.run(['kraken','-i',str(inp),str(out),'segment','-bl','ocr','-m',str(model)],text=True,capture_output=True)
+              text=unicodedata.normalize('NFC',out.read_text(encoding='utf-8',errors='replace')) if out.exists() else ''
+              results[inp.name]={'text':text,'returncode':cp.returncode,'stderr':cp.stderr[-2000:]}
+              print('###',inp.name,'\n',text[:1500],flush=True)
+
+          (ROOT/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open(ROOT/'all_text.txt','w',encoding='utf-8') as f:
+            for k,v in results.items(): f.write(f'\n===== {k} =====\n{v["text"]}\n')
+          # terms candidatos para facilitar inspeção
+          terms=['correia','costa','joão','joao','rosa','joaquim','manoel','manuel']
+          hits=[]
+          for k,v in results.items():
+            low=v['text'].lower()
+            if any(t in low for t in terms): hits.append({'file':k,'text':v['text']})
+          (ROOT/'candidate_hits.json').write_text(json.dumps(hits,ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+          python /tmp/cross.py
+      - name: Publicar leitura cruzada
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-crosscheck-kraken
+          path: crosscheck/
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: error
