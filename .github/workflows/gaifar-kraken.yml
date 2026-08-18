@@ -20,50 +20,90 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install 'kraken==5.3.0' pillow requests
-      - name: Baixar modelo português e reconhecer linhas
+      - name: Baixar modelo português e reconhecer o assento correto
         shell: bash
         run: |
           cat > /tmp/run.py <<'PY'
-          import json, subprocess, requests
+          import json, subprocess, requests, unicodedata, traceback
           from pathlib import Path
           from PIL import Image, ImageEnhance, ImageOps, ImageFilter
 
           root=Path('gaifar-kraken'); root.mkdir(exist_ok=True)
-          src=root/'m0285.jpg'
-          u='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280743'
-          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120); r.raise_for_status(); src.write_bytes(r.content)
+          src=root/'m0286.jpg'
+          # Imagem correta: PPTL25/001/00009_m0286, assento n.º 10 Manoel.
+          u='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280744'
+          r=requests.get(u,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120)
+          r.raise_for_status(); src.write_bytes(r.content)
+
+          # Recupera o modelo TraPrInq pela API oficial do Zenodo, evitando a URL web bloqueada.
+          meta=requests.get('https://zenodo.org/api/records/14538271',headers={'User-Agent':'Mozilla/5.0'},timeout=120)
+          meta.raise_for_status(); md=meta.json()
+          (root/'zenodo_record.json').write_text(json.dumps(md,ensure_ascii=False,indent=2),encoding='utf-8')
+          entries=[]
+          fs=md.get('files')
+          if isinstance(fs,list): entries=fs
+          elif isinstance(fs,dict): entries=fs.get('entries') or []
+          target=None
+          for f in entries:
+            key=f.get('key') or f.get('filename') or f.get('name') or ''
+            if key.lower()=='traprinq.mlmodel':
+              links=f.get('links') or {}
+              target=links.get('content') or links.get('self') or links.get('download')
+              break
+          if not target:
+            # API alternativa, caso a forma do objeto principal mude.
+            fm=requests.get('https://zenodo.org/api/records/14538271/files',headers={'User-Agent':'Mozilla/5.0'},timeout=120)
+            fm.raise_for_status(); fd=fm.json()
+            (root/'zenodo_files.json').write_text(json.dumps(fd,ensure_ascii=False,indent=2),encoding='utf-8')
+            vals=fd.get('entries',[]) if isinstance(fd,dict) else fd
+            for f in vals:
+              key=f.get('key') or f.get('filename') or f.get('name') or ''
+              if key.lower()=='traprinq.mlmodel':
+                links=f.get('links') or {}
+                target=links.get('content') or links.get('self') or links.get('download')
+                break
+          if not target: raise RuntimeError('TraPrInq.mlmodel não localizado nos metadados Zenodo')
+          print('MODEL_URL',target,flush=True)
           model=root/'TraPrInq.mlmodel'
-          murl='https://zenodo.org/records/14538271/files/TraPrInq.mlmodel?download=1'
-          rr=requests.get(murl,headers={'User-Agent':'Mozilla/5.0'},timeout=600); rr.raise_for_status(); model.write_bytes(rr.content)
+          with requests.get(target,headers={'User-Agent':'Mozilla/5.0','Accept':'application/octet-stream'},timeout=900,stream=True) as rr:
+            rr.raise_for_status()
+            with open(model,'wb') as fh:
+              for chunk in rr.iter_content(1024*1024):
+                if chunk: fh.write(chunk)
           print('MODEL_BYTES',model.stat().st_size,flush=True)
+
           im=Image.open(src).convert('L')
+          # Registro superior completo e a zona nuclear de filiação.
+          rec=im.crop((105,105,955,795)); rec=ImageOps.autocontrast(rec,cutoff=0.2); rec.save(root/'record_full.png')
+          fil=im.crop((110,270,955,610)); fil=ImageOps.autocontrast(fil,cutoff=0.2); fil.save(root/'filiacao.png')
 
-          rec=im.crop((100,585,940,1370))
-          rec=ImageOps.autocontrast(rec,cutoff=0.2)
-          rec.save(root/'record_full.png')
-
-          centers=[618,668,718,768,818,868,918,968,1018,1068,1118,1168,1218,1268,1318]
+          # Centros das linhas manuscritas do assento n.º 10.
+          centers=[145,181,218,254,291,327,363,400,436,472,509,545,581,618,654,690,727,763]
           outputs={}
-          for variant,(top,bottom) in {'A':(30,24),'B':(37,31),'C':(44,38)}.items():
+          # Três recortes verticais por linha para reduzir erro de segmentação manual.
+          for variant,(top,bottom) in {'A':(26,24),'B':(32,30),'C':(38,36)}.items():
             for i,c in enumerate(centers,1):
-              line=im.crop((105,c-top,945,c+bottom))
+              line=im.crop((115,max(0,c-top),955,min(im.height,c+bottom)))
               line=ImageOps.autocontrast(line,cutoff=0.15)
-              line=ImageEnhance.Contrast(line).enhance(1.15)
-              line=line.filter(ImageFilter.UnsharpMask(radius=0.8,percent=120,threshold=3))
-              line=ImageOps.expand(line,border=(20,8,20,8),fill=255)
+              line=ImageEnhance.Contrast(line).enhance(1.10)
+              line=line.filter(ImageFilter.UnsharpMask(radius=0.7,percent=100,threshold=3))
+              line=ImageOps.expand(line,border=(25,10,25,10),fill=255)
               p=root/f'line{variant}_{i:02d}.png'; line.save(p)
               out=p.with_suffix('.txt')
               cmd=['kraken','-i',str(p),str(out),'ocr','--no-segmentation','-m',str(model)]
               cp=subprocess.run(cmd,text=True,capture_output=True)
               text=out.read_text(encoding='utf-8',errors='replace').strip() if out.exists() else ''
-              outputs[p.name]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
-              print(p.name+': '+repr(text),flush=True)
+              text_nfc=unicodedata.normalize('NFC',text)
+              outputs[p.name]={'text':text_nfc,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+              print(p.name+': '+repr(text_nfc),flush=True)
 
-          out=root/'record_full_ocr.txt'
-          cp=subprocess.run(['kraken','-i',str(root/'record_full.png'),str(out),'segment','-bl','ocr','-m',str(model)],text=True,capture_output=True)
-          text=out.read_text(encoding='utf-8',errors='replace') if out.exists() else ''
-          outputs['record_full']={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
-          print('FULL_PAGE_TEXT\n'+text,flush=True)
+          # Também tenta segmentação automática no registro e na área de filiação.
+          for name in ['record_full','filiacao']:
+            inp=root/f'{name}.png'; out=root/f'{name}_ocr.txt'
+            cp=subprocess.run(['kraken','-i',str(inp),str(out),'segment','-bl','ocr','-m',str(model)],text=True,capture_output=True)
+            text=unicodedata.normalize('NFC',out.read_text(encoding='utf-8',errors='replace')) if out.exists() else ''
+            outputs[name]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+            print(name.upper()+'_TEXT\n'+text,flush=True)
 
           (root/'results.json').write_text(json.dumps(outputs,ensure_ascii=False,indent=2),encoding='utf-8')
           with open(root/'results_summary.txt','w',encoding='utf-8') as f:
