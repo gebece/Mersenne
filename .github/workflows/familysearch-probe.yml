@@ -1,0 +1,73 @@
+name: Sonda FamilySearch Manoel Correia
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar Playwright
+        run: |
+          pip install playwright requests beautifulsoup4
+          python -m playwright install --with-deps chromium
+      - name: Capturar HTML e respostas JSON
+        shell: bash
+        run: |
+          cat > /tmp/probe.py <<'PY'
+          import asyncio, json, re
+          from pathlib import Path
+          import requests
+          from bs4 import BeautifulSoup
+          from playwright.async_api import async_playwright
+
+          URL='https://ancestors.familysearch.org/pt/LYV6-8M3/manoel-correia-1910-1973'
+          out=Path('familysearch_probe'); out.mkdir(exist_ok=True)
+          r=requests.get(URL,headers={'User-Agent':'Mozilla/5.0'},timeout=60)
+          (out/'requests.html').write_bytes(r.content)
+          (out/'requests_headers.json').write_text(json.dumps(dict(r.headers),indent=2,ensure_ascii=False))
+          print('requests',r.status_code,len(r.content),r.url)
+
+          async def main():
+            async with async_playwright() as p:
+              browser=await p.chromium.launch(headless=True)
+              page=await browser.new_page(viewport={'width':1440,'height':1200})
+              urls=[]
+              async def on_response(resp):
+                u=resp.url
+                urls.append({'url':u,'status':resp.status,'content_type':resp.headers.get('content-type','')})
+                ct=resp.headers.get('content-type','')
+                if ('json' in ct or any(k in u.lower() for k in ['person','tree-data','ancestor','family'])) and resp.status==200:
+                  try:
+                    body=await resp.body()
+                    if len(body)<5_000_000:
+                      safe=re.sub(r'[^A-Za-z0-9._-]+','_',u)[-180:]
+                      (out/f'resp_{len(urls):04d}_{safe}.bin').write_bytes(body)
+                  except Exception as e:
+                    pass
+              page.on('response',on_response)
+              await page.goto(URL,wait_until='networkidle',timeout=120000)
+              await page.wait_for_timeout(5000)
+              (out/'page.html').write_text(await page.content(),encoding='utf-8')
+              (out/'page_text.txt').write_text(await page.locator('body').inner_text(),encoding='utf-8')
+              await page.screenshot(path=str(out/'page.png'),full_page=True)
+              (out/'responses.json').write_text(json.dumps(urls,ensure_ascii=False,indent=2),encoding='utf-8')
+              await browser.close()
+          asyncio.run(main())
+          PY
+          python /tmp/probe.py
+          grep -RniE 'João Correia|Rosa Costa|LYV6-8M3|parent|father|mother' familysearch_probe > familysearch_probe/grep.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: familysearch-probe
+          path: familysearch_probe/
+          retention-days: 7
