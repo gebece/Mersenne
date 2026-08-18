@@ -11,3 +11,4 @@ Sincronização 10: captura corrigida das respostas JSON do FamilySearch.
 Sincronização 11: Kraken corrigido para m0286 e modelo via API Zenodo.
 Sincronização 12: sonda de alta resolução do Digitarq.
 Sincronização 13: sonda corrigida e Kraken com download direto do TraPrInq.
+Sincronização 14: leitura cruzada de casamentos e batismos dos irmãos.
