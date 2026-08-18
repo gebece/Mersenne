@@ -1,0 +1,46 @@
+name: Folhas dos pais de Manoel 1881 a 1884
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  parents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Baixar folhas históricas alvo
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,re,requests,concurrent.futures
+          from pathlib import Path
+          base='https://digitarq.arquivos.pt'
+          doc='6b8b0d0ff79a456d84d69d3c755a5e79'
+          root=Path('parents-scans'); root.mkdir()
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 genealogy-research/1.0'})
+          data=s.get(f'{base}/api/rdigital/{doc}?fromIndex=0&max=100000',timeout=120).json()
+          files=[]
+          for rec in data.get('results',[]):
+            m=re.search(r'_m(\d+)\.',rec.get('name',''))
+            if m and 60<=int(m.group(1))<=95: files.append((int(m.group(1)),rec))
+          def one(item):
+            n,rec=item
+            r=s.get(f'{base}/api/rdigital/dissemination?fileId={rec["id"]}',timeout=180); r.raise_for_status()
+            p=root/f'{rec["name"]}'; p.write_bytes(r.content)
+            return {'m':n,'id':rec['id'],'name':rec['name'],'bytes':len(r.content)}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex: manifest=list(ex.map(one,files))
+          (root/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(manifest,ensure_ascii=False,indent=2))
+          PY
+      - name: Publicar folhas dos pais
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaifar-parents-scans
+          path: parents-scans/
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: error
