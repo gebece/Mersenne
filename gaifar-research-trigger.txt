@@ -9,3 +9,4 @@ Sincronização 8: Kraken 5.3.0.
 Sincronização 9: captura Playwright do perfil FamilySearch.
 Sincronização 10: captura corrigida das respostas JSON do FamilySearch.
 Sincronização 11: Kraken corrigido para m0286 e modelo via API Zenodo.
+Sincronização 12: sonda de alta resolução do Digitarq.
