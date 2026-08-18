@@ -16,9 +16,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Instalar Kraken e dependências
+      - name: Instalar Kraken e dependências CPU
         run: |
           python -m pip install --upgrade pip
+          pip install torch==2.4.1+cpu torchvision==0.19.1+cpu --index-url https://download.pytorch.org/whl/cpu
           pip install 'kraken==5.3.0' pillow requests
       - name: Baixar modelo português e reconhecer o assento correto
         shell: bash
@@ -30,42 +31,19 @@ jobs:
 
           root=Path('gaifar-kraken'); root.mkdir(exist_ok=True)
           src=root/'m0286.jpg'
-          # Imagem correta: PPTL25/001/00009_m0286, assento n.º 10 Manoel.
           u='https://digitarq.arquivos.pt/api/rdigital/dissemination?fileId=52280744'
           r=requests.get(u,headers={'User-Agent':'Mozilla/5.0 historical-genealogy-research/1.0'},timeout=120)
           r.raise_for_status(); src.write_bytes(r.content)
 
-          # Recupera o modelo TraPrInq pela API oficial do Zenodo, evitando a URL web bloqueada.
-          meta=requests.get('https://zenodo.org/api/records/14538271',headers={'User-Agent':'Mozilla/5.0'},timeout=120)
-          meta.raise_for_status(); md=meta.json()
-          (root/'zenodo_record.json').write_text(json.dumps(md,ensure_ascii=False,indent=2),encoding='utf-8')
-          entries=[]
-          fs=md.get('files')
-          if isinstance(fs,list): entries=fs
-          elif isinstance(fs,dict): entries=fs.get('entries') or []
-          target=None
-          for f in entries:
-            key=f.get('key') or f.get('filename') or f.get('name') or ''
-            if key.lower()=='traprinq.mlmodel':
-              links=f.get('links') or {}
-              target=links.get('content') or links.get('self') or links.get('download')
-              break
-          if not target:
-            # API alternativa, caso a forma do objeto principal mude.
-            fm=requests.get('https://zenodo.org/api/records/14538271/files',headers={'User-Agent':'Mozilla/5.0'},timeout=120)
-            fm.raise_for_status(); fd=fm.json()
-            (root/'zenodo_files.json').write_text(json.dumps(fd,ensure_ascii=False,indent=2),encoding='utf-8')
-            vals=fd.get('entries',[]) if isinstance(fd,dict) else fd
-            for f in vals:
-              key=f.get('key') or f.get('filename') or f.get('name') or ''
-              if key.lower()=='traprinq.mlmodel':
-                links=f.get('links') or {}
-                target=links.get('content') or links.get('self') or links.get('download')
-                break
-          if not target: raise RuntimeError('TraPrInq.mlmodel não localizado nos metadados Zenodo')
-          print('MODEL_URL',target,flush=True)
+          target='https://zenodo.org/records/14538271/files/TraPrInq.mlmodel?download=1'
           model=root/'TraPrInq.mlmodel'
-          with requests.get(target,headers={'User-Agent':'Mozilla/5.0','Accept':'application/octet-stream'},timeout=900,stream=True) as rr:
+          headers={
+            'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+            'Accept':'application/octet-stream,*/*',
+            'Referer':'https://zenodo.org/records/14538271',
+          }
+          with requests.get(target,headers=headers,timeout=1200,stream=True,allow_redirects=True) as rr:
+            print('MODEL_HTTP',rr.status_code,rr.url,dict(rr.headers),flush=True)
             rr.raise_for_status()
             with open(model,'wb') as fh:
               for chunk in rr.iter_content(1024*1024):
@@ -73,15 +51,12 @@ jobs:
           print('MODEL_BYTES',model.stat().st_size,flush=True)
 
           im=Image.open(src).convert('L')
-          # Registro superior completo e a zona nuclear de filiação.
           rec=im.crop((105,105,955,795)); rec=ImageOps.autocontrast(rec,cutoff=0.2); rec.save(root/'record_full.png')
           fil=im.crop((110,270,955,610)); fil=ImageOps.autocontrast(fil,cutoff=0.2); fil.save(root/'filiacao.png')
 
-          # Centros das linhas manuscritas do assento n.º 10.
           centers=[145,181,218,254,291,327,363,400,436,472,509,545,581,618,654,690,727,763]
           outputs={}
-          # Três recortes verticais por linha para reduzir erro de segmentação manual.
-          for variant,(top,bottom) in {'A':(26,24),'B':(32,30),'C':(38,36)}.items():
+          for variant,(top,bottom) in {'A':(30,28),'B':(38,36)}.items():
             for i,c in enumerate(centers,1):
               line=im.crop((115,max(0,c-top),955,min(im.height,c+bottom)))
               line=ImageOps.autocontrast(line,cutoff=0.15)
@@ -90,14 +65,12 @@ jobs:
               line=ImageOps.expand(line,border=(25,10,25,10),fill=255)
               p=root/f'line{variant}_{i:02d}.png'; line.save(p)
               out=p.with_suffix('.txt')
-              cmd=['kraken','-i',str(p),str(out),'ocr','--no-segmentation','-m',str(model)]
-              cp=subprocess.run(cmd,text=True,capture_output=True)
+              cp=subprocess.run(['kraken','-i',str(p),str(out),'ocr','--no-segmentation','-m',str(model)],text=True,capture_output=True)
               text=out.read_text(encoding='utf-8',errors='replace').strip() if out.exists() else ''
-              text_nfc=unicodedata.normalize('NFC',text)
-              outputs[p.name]={'text':text_nfc,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
-              print(p.name+': '+repr(text_nfc),flush=True)
+              text=unicodedata.normalize('NFC',text)
+              outputs[p.name]={'text':text,'returncode':cp.returncode,'stdout':cp.stdout,'stderr':cp.stderr}
+              print(p.name+': '+repr(text),flush=True)
 
-          # Também tenta segmentação automática no registro e na área de filiação.
           for name in ['record_full','filiacao']:
             inp=root/f'{name}.png'; out=root/f'{name}_ocr.txt'
             cp=subprocess.run(['kraken','-i',str(inp),str(out),'segment','-bl','ocr','-m',str(model)],text=True,capture_output=True)
