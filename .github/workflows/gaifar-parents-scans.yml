@@ -1,4 +1,4 @@
-name: Folhas dos pais de Manoel 1881 a 1884
+name: Folhas dos pais de Manoel 1879 a 1884
 
 on:
   pull_request:
@@ -26,7 +26,7 @@ jobs:
           files=[]
           for rec in data.get('results',[]):
             m=re.search(r'_m(\d+)\.',rec.get('name',''))
-            if m and 60<=int(m.group(1))<=95: files.append((int(m.group(1)),rec))
+            if m and 35<=int(m.group(1))<=70: files.append((int(m.group(1)),rec))
           def one(item):
             n,rec=item
             r=s.get(f'{base}/api/rdigital/dissemination?fileId={rec["id"]}',timeout=180); r.raise_for_status()
@@ -39,7 +39,7 @@ jobs:
       - name: Publicar folhas dos pais
         uses: actions/upload-artifact@v4
         with:
-          name: gaifar-parents-scans
+          name: gaifar-parents-scans-1879-1884
           path: parents-scans/
           retention-days: 7
           compression-level: 6
