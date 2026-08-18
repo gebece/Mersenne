@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Instalar dependências mínimas
+        run: pip install pillow requests
       - name: Testar endpoints e inspecionar o visualizador
         shell: bash
         run: |
@@ -24,7 +26,7 @@ jobs:
           base = 'https://digitarq.arquivos.pt'
           file_id = '52280744'
           doc_id = '6b8b0d0ff79a456d84d69d3c755a5e79'
-          out = Path('probe'); out.mkdir()
+          out = Path('probe'); out.mkdir(exist_ok=True)
           s = requests.Session()
           s.headers.update({'User-Agent':'Mozilla/5.0 genealogy-research/1.0','Accept':'*/*'})
 
@@ -78,6 +80,7 @@ jobs:
           print(json.dumps(results,ensure_ascii=False,indent=2))
           PY
       - name: Publicar sonda
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gaifar-hires-probe
